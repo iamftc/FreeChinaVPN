@@ -1,40 +1,113 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 enum ConnectionStateStatus { disconnected, connecting, connected, error }
+
+// ============ ADMOB ============
+const String _testAdUnitId = 'ca-app-pub-3940256099942544/1033173712'; // тест
+const String _prodAdUnitId = 'ca-app-pub-XXXXXXXXXXXXXXXX/XXXXXXXXXX'; // ← замени на свой
+
+// ============ АДМИН ПИН ============
+const String _adminPin = "030305";
 
 class CircleDesignWidget extends StatefulWidget {
   @override
   _CircleDesignWidgetState createState() => _CircleDesignWidgetState();
 }
 
-class _CircleDesignWidgetState extends State<CircleDesignWidget> with SingleTickerProviderStateMixin {
+class _CircleDesignWidgetState extends State<CircleDesignWidget>
+    with SingleTickerProviderStateMixin {
   ConnectionStateStatus _currentState = ConnectionStateStatus.disconnected;
   late AnimationController _controller;
   late Animation<double> _animation;
+
+  // ---- AdMob ----
+  InterstitialAd? _interstitialAd;
+  bool _isAdLoaded = false;
+
+  // ---- Удержание для админки ----
+  bool _isLongPressing = false;
 
   @override
   void initState() {
     super.initState();
 
-    // Animation controller for the connecting state
-    _controller = AnimationController(duration: const Duration(seconds: 4), vsync: this)..repeat(reverse: true);
+    _controller =
+        AnimationController(duration: const Duration(seconds: 4), vsync: this)
+          ..repeat(reverse: true);
 
     _animation = Tween<double>(begin: 0.8, end: 1).animate(_controller)
       ..addListener(() {
         setState(() {});
       });
+
+    // Загружаем рекламу сразу при старте
+    _loadAd();
   }
 
   @override
   void dispose() {
     _controller.dispose();
+    _interstitialAd?.dispose();
     super.dispose();
   }
 
+  // ============ ЗАГРУЗКА РЕКЛАМЫ ============
+  void _loadAd() {
+    InterstitialAd.load(
+      adUnitId: _testAdUnitId, // замени на _prodAdUnitId когда будешь публиковать
+      request: const AdRequest(),
+      adLoadCallback: InterstitialAdLoadCallback(
+        onAdLoaded: (ad) {
+          _interstitialAd = ad;
+          _isAdLoaded = true;
+        },
+        onAdFailedToLoad: (error) {
+          _isAdLoaded = false;
+          // Повторная попытка через 30 сек
+          Future.delayed(const Duration(seconds: 30), _loadAd);
+        },
+      ),
+    );
+  }
+
+  // ============ ПОКАЗАТЬ РЕКЛАМУ → ПОДКЛЮЧИТЬ ============
+  void _showAdThenConnect() {
+    if (_isAdLoaded && _interstitialAd != null) {
+      _interstitialAd!.fullScreenContentCallback = FullScreenContentCallback(
+        onAdDismissedFullScreenContent: (ad) {
+          ad.dispose();
+          _interstitialAd = null;
+          _isAdLoaded = false;
+          _loadAd(); // грузим следующую
+          _doConnect(); // подключаем после просмотра
+        },
+        onAdFailedToShowFullScreenContent: (ad, error) {
+          ad.dispose();
+          _interstitialAd = null;
+          _isAdLoaded = false;
+          _loadAd();
+          _doConnect(); // если ошибка — всё равно подключаем
+        },
+      );
+      _interstitialAd!.show();
+    } else {
+      // Реклама не загружена — подключаем сразу
+      _doConnect();
+    }
+  }
+
+  void _doConnect() {
+    changeState(ConnectionStateStatus.connecting);
+  }
+
+  // ============ СМЕНА СОСТОЯНИЯ ============
   void changeState(ConnectionStateStatus state) {
     setState(() {
       _currentState = state;
-      if (state == ConnectionStateStatus.connecting || state == ConnectionStateStatus.connected) {
+      if (state == ConnectionStateStatus.connecting ||
+          state == ConnectionStateStatus.connected) {
         _controller.repeat(reverse: true);
       } else {
         _controller.stop();
@@ -42,34 +115,106 @@ class _CircleDesignWidgetState extends State<CircleDesignWidget> with SingleTick
     });
   }
 
+  // ============ СКРЫТАЯ АДМИН ПАНЕЛЬ ============
+  void _onLongPressStart(LongPressStartDetails details) {
+    _isLongPressing = true;
+    Future.delayed(const Duration(seconds: 15), () {
+      if (_isLongPressing && mounted) {
+        HapticFeedback.heavyImpact();
+        _showPinDialog();
+      }
+    });
+  }
+
+  void _onLongPressEnd(LongPressEndDetails details) {
+    _isLongPressing = false;
+  }
+
+  void _showPinDialog() {
+    final pinController = TextEditingController();
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.black87,
+        title: const Text(
+          "🔐",
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 32),
+        ),
+        content: TextField(
+          controller: pinController,
+          obscureText: true,
+          keyboardType: TextInputType.number,
+          maxLength: 6,
+          style: const TextStyle(color: Colors.white, fontSize: 24),
+          textAlign: TextAlign.center,
+          decoration: const InputDecoration(
+            counterText: "",
+            enabledBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Colors.white30),
+            ),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Colors.white),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              if (pinController.text == _adminPin) {
+                _openAdminPanel();
+              }
+            },
+            child:
+                const Text("OK", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openAdminPanel() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const AdminPanelScreen()),
+    );
+  }
+
+  // ============ ОБРАБОТКА НАЖАТИЯ ============
+  void _onTap() {
+    switch (_currentState) {
+      case ConnectionStateStatus.disconnected:
+      case ConnectionStateStatus.error:
+        // Показываем рекламу → потом подключаем
+        _showAdThenConnect();
+        break;
+      case ConnectionStateStatus.connecting:
+      case ConnectionStateStatus.connected:
+        // Отключение — без рекламы
+        changeState(ConnectionStateStatus.disconnected);
+        break;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () {
-        // Change the state for demo purposes
-        switch (_currentState) {
-          case ConnectionStateStatus.disconnected:
-            changeState(ConnectionStateStatus.connecting);
-            break;
-          case ConnectionStateStatus.connecting:
-            changeState(ConnectionStateStatus.connected);
-            break;
-          case ConnectionStateStatus.connected:
-            changeState(ConnectionStateStatus.error);
-            break;
-          case ConnectionStateStatus.error:
-            changeState(ConnectionStateStatus.disconnected);
-            break;
-        }
-      },
+      onTap: _onTap,
+      onLongPressStart: _onLongPressStart,
+      onLongPressEnd: _onLongPressEnd,
       child: CustomPaint(
         size: const Size(168, 168),
-        painter: CirclePainter(currentState: _currentState, animationValue: _animation.value),
+        painter: CirclePainter(
+          currentState: _currentState,
+          animationValue: _animation.value,
+        ),
       ),
     );
   }
 }
 
+// ============ PAINTER (без изменений) ============
 class CirclePainter extends CustomPainter {
   final ConnectionStateStatus currentState;
   final double animationValue;
@@ -88,49 +233,45 @@ class CirclePainter extends CustomPainter {
     } else if (currentState == ConnectionStateStatus.error) {
       baseColor = Colors.red.shade900;
     } else {
-      // baseColor = const Color(0xFFB8C7F4);
       baseColor = const Color(0xFF3446A5);
     }
     innerCircleColor = [
       baseColor.withAlpha(230),
       baseColor,
-      // Color.fromARGB(73, 27, 80, 43),
-      // Color.fromARGB(71, 12, 48, 21),
     ];
 
-    // Outer circle (pulsing animation for connecting state)
     final Paint outerCirclePaint = Paint()
       ..color = baseColor.withOpacity(0.15)
       ..style = PaintingStyle.fill;
-    // double outerRadius = (size.width / 2) * (currentState == ConnectionStateStatus.connecting ? animationValue : 1);
-    final double outerRadius =
-        84 *
-        ([ConnectionStateStatus.connecting, ConnectionStateStatus.connected].contains(currentState)
+    final double outerRadius = 84 *
+        ([
+          ConnectionStateStatus.connecting,
+          ConnectionStateStatus.connected
+        ].contains(currentState)
             ? animationValue
             : 1);
-
     canvas.drawCircle(Offset(cx, cy), outerRadius, outerCirclePaint);
 
-    // Middle circle
     final Paint middleCirclePaint = Paint()
       ..color = baseColor.withOpacity(.3)
       ..style = PaintingStyle.fill;
-    final double middleRadius =
-        60 *
-        ([ConnectionStateStatus.connecting, ConnectionStateStatus.connected].contains(currentState)
+    final double middleRadius = 60 *
+        ([
+          ConnectionStateStatus.connecting,
+          ConnectionStateStatus.connected
+        ].contains(currentState)
             ? animationValue + (1 - animationValue) / 3
             : 1);
     canvas.drawCircle(Offset(cx, cy), middleRadius, middleCirclePaint);
 
-    // Inner circle with gradient
     final Paint innerCirclePaint = Paint()
       ..shader = LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
         colors: innerCircleColor,
       ).createShader(Rect.fromCircle(center: Offset(cx, cy), radius: 36));
-    final double innerRadius = 36; //* (currentState == ConnectionStateStatus.connecting ? animationValue : 1);
-    canvas.drawCircle(Offset(cx, cy), innerRadius, innerCirclePaint);
+    canvas.drawCircle(Offset(cx, cy), innerCirclePaint.shader != null ? 36 : 36, innerCirclePaint);
+
     final Paint pathPaint = Paint()
       ..color = Colors.white
       ..style = PaintingStyle.stroke
@@ -149,15 +290,196 @@ class CirclePainter extends CustomPainter {
       ..cubicTo(72.0055, 86.4045, 71.7676, 83.9919, 72.2303, 81.6643)
       ..cubicTo(72.693, 79.3366, 73.8355, 77.1984, 75.5133, 75.52);
     canvas.drawPath(curvePath, pathPaint);
-    // Vertical line
+
     final Path linePath = Path()
       ..moveTo(84.0066, 72)
       ..lineTo(84.0066, 82.6667);
-
-    // Draw the vertical line
     canvas.drawPath(linePath, pathPaint);
   }
 
   @override
   bool shouldRepaint(CustomPainter oldDelegate) => true;
+}
+
+// ============ АДМИН ПАНЕЛЬ ЭКРАН ============
+class AdminPanelScreen extends StatefulWidget {
+  const AdminPanelScreen({Key? key}) : super(key: key);
+
+  @override
+  State<AdminPanelScreen> createState() => _AdminPanelScreenState();
+}
+
+class _AdminPanelScreenState extends State<AdminPanelScreen> {
+  final _subUrlController = TextEditingController();
+  final _messageController = TextEditingController();
+  String _statusMessage = "";
+
+  final List<Map<String, dynamic>> _servers = [
+    {"name": "🇩🇪 Germany", "enabled": true},
+    {"name": "🇳🇱 Netherlands", "enabled": true},
+    {"name": "🇫🇮 Finland", "enabled": true},
+    {"name": "🇫🇷 France", "enabled": true},
+    {"name": "🇺🇸 USA", "enabled": true},
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0A0A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF111111),
+        title: const Text("Admin Panel",
+            style: TextStyle(color: Colors.white)),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _sectionTitle("⚙️ Серверы"),
+            const SizedBox(height: 8),
+            ...(_servers.map((s) => _serverTile(s)).toList()),
+            const SizedBox(height: 24),
+            _sectionTitle("🔗 URL подписки"),
+            const SizedBox(height: 8),
+            _inputField(
+              controller: _subUrlController,
+              hint: "https://domain.com/sub/...",
+              label: "Новый URL",
+            ),
+            const SizedBox(height: 8),
+            _actionButton(
+              label: "💾 Сохранить",
+              color: Colors.blue,
+              onTap: () => setState(
+                  () => _statusMessage = "✅ URL обновлён"),
+            ),
+            const SizedBox(height: 24),
+            _sectionTitle("📢 Сообщение пользователям"),
+            const SizedBox(height: 8),
+            _inputField(
+              controller: _messageController,
+              hint: "Текст...",
+              label: "Сообщение",
+              maxLines: 4,
+            ),
+            const SizedBox(height: 8),
+            _actionButton(
+              label: "📤 Отправить всем",
+              color: Colors.orange,
+              onTap: () => setState(
+                  () => _statusMessage = "✅ Отправлено"),
+            ),
+            const SizedBox(height: 16),
+            if (_statusMessage.isNotEmpty)
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.1),
+                  border: Border.all(
+                      color: Colors.green.withOpacity(0.3)),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(_statusMessage,
+                    style:
+                        const TextStyle(color: Colors.greenAccent)),
+              ),
+            const SizedBox(height: 40),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionTitle(String title) => Padding(
+        padding: const EdgeInsets.only(bottom: 4),
+        child: Text(title,
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.bold)),
+      );
+
+  Widget _serverTile(Map<String, dynamic> server) => Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1A1A1A),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white10),
+        ),
+        child: ListTile(
+          title: Text(server["name"],
+              style: const TextStyle(color: Colors.white)),
+          subtitle: Text(
+            server["enabled"] ? "✅ Активен" : "❌ Выключен",
+            style: TextStyle(
+                color: server["enabled"]
+                    ? Colors.greenAccent
+                    : Colors.redAccent,
+                fontSize: 12),
+          ),
+          trailing: Switch(
+            value: server["enabled"],
+            activeColor: Colors.greenAccent,
+            onChanged: (val) =>
+                setState(() => server["enabled"] = val),
+          ),
+        ),
+      );
+
+  Widget _inputField({
+    required TextEditingController controller,
+    required String hint,
+    required String label,
+    int maxLines = 1,
+  }) =>
+      TextField(
+        controller: controller,
+        maxLines: maxLines,
+        style: const TextStyle(color: Colors.white),
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: const TextStyle(color: Colors.white54),
+          hintText: hint,
+          hintStyle: const TextStyle(color: Colors.white24),
+          filled: true,
+          fillColor: const Color(0xFF1A1A1A),
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide:
+                  const BorderSide(color: Colors.white10)),
+          enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide:
+                  const BorderSide(color: Colors.white10)),
+          focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: const BorderSide(color: Colors.blue)),
+        ),
+      );
+
+  Widget _actionButton({
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) =>
+      SizedBox(
+        width: double.infinity,
+        child: ElevatedButton(
+          onPressed: onTap,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: color.withOpacity(0.2),
+            side: BorderSide(color: color.withOpacity(0.5)),
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10)),
+          ),
+          child: Text(label,
+              style: TextStyle(color: color, fontSize: 15)),
+        ),
+      );
 }
