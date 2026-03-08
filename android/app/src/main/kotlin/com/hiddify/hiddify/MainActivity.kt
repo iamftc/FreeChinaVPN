@@ -1,4 +1,4 @@
-package com.hiddify.hiddify
+package com.freechinavpn.app
 
 import android.annotation.SuppressLint
 import android.content.Intent
