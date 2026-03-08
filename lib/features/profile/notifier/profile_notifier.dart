@@ -200,9 +200,13 @@ class FreeProfilesNotifier extends _$FreeProfilesNotifier {
   }
 }
 
-@riverpod
-Future<List<FreeProfile>> freeProfilesFilteredByRegion(Ref ref) async {
-  final freeProfiles = await ref.watch(freeProfilesNotifierProvider.future);
-  final region = ref.watch(ConfigOptions.region);
-  return freeProfiles.where((e) => e.region.contains(region.name) || e.region.isEmpty).toList();
+@override
+Future<List<FreeProfile>> build() async {
+  return [
+    FreeProfile(
+      name: "Nederland",
+      url: "https://nl1.davvut05.site:2096/sub/7b79e7z6jqi9n8x0",
+      region: "",
+    ),
+  ];
 }
